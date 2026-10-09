@@ -142,7 +142,7 @@ function isYellow_(color) {
 /** Called by the timer. Adds a row for every new video found. */
 function checkForNewVideos() {
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(30 * 1000)) return;
+  if (!lock.tryLock(1000)) return; // a previous run is still going
   try {
     const props = PropertiesService.getScriptProperties();
     const start = props.getProperty(PROP_START);
@@ -168,7 +168,7 @@ function checkForNewVideos() {
  */
 function addTodaysVideos() {
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(30 * 1000)) return;
+  if (!lock.tryLock(1000)) return; // a previous run is still going
   try {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     const tz = timeZone_(ss);
@@ -190,15 +190,15 @@ function addVideosCreatedSince_(since) {
   const props = PropertiesService.getScriptProperties();
   const seen = JSON.parse(props.getProperty(PROP_SEEN) || '[]');
   const videos = findVideosCreatedSince_(since)
-    .filter((f) => seen.indexOf(f.getId()) === -1)
-    .sort((a, b) => a.getDateCreated() - b.getDateCreated());
+    .filter((v) => seen.indexOf(v.id) === -1)
+    .sort((a, b) => a.created - b.created);
   if (!videos.length) return [];
 
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const added = [];
-  videos.forEach((file) => {
-    if (addVideoRow_(ss, file)) added.push(file.getName());
-    seen.push(file.getId());
+  videos.forEach((video) => {
+    if (addVideoRow_(ss, video)) added.push(video.name);
+    seen.push(video.id);
   });
   SpreadsheetApp.flush();
   props.setProperty(PROP_SEEN, JSON.stringify(seen.slice(-MAX_SEEN_IDS)));
@@ -223,17 +223,17 @@ function previewNextRow() {
 // ---------------------------------------------------------------------------
 
 /**
- * Adds the row for `file`; highlights it if it's the day's HIGHLIGHT_NTH_VIDEO-th
+ * Adds the row for `video` ({ id, name, created }); highlights it if it's the day's HIGHLIGHT_NTH_VIDEO-th
  * video. Returns false if the video is already in the sheet.
  */
-function addVideoRow_(ss, file) {
+function addVideoRow_(ss, video) {
   const tz = timeZone_(ss);
-  const uploaded = file.getDateCreated();
+  const uploaded = video.created;
   const sheet = getTargetSheet_(ss, uploaded);
   const state = readSheetState_(sheet);
 
-  if (state.links.some((link) => link.indexOf(file.getId()) !== -1)) {
-    Logger.log('Already in sheet, skipping: ' + file.getName());
+  if (state.links.some((link) => link.indexOf(video.id) !== -1)) {
+    Logger.log('Already in sheet, skipping: ' + video.name);
     return false;
   }
 
@@ -250,14 +250,14 @@ function addVideoRow_(ss, file) {
     .setNumberFormat('m/d')
     .setValue(dayKeyToSerial(dayKey));
   sheet.getRange(row, COL.POST_TYPE, 1, 3)
-    .setValues([[CONFIG.POST_TYPE, CONFIG.EDITOR, driveLink_(file.getId())]]);
+    .setValues([[CONFIG.POST_TYPE, CONFIG.EDITOR, driveLink_(video.id)]]);
   sheet.getRange(row, COL.CAPTION, 1, 3)
-    .setValues([[captionFromFileName(file.getName()), CONFIG.HOT, CONFIG.H_PROMO]]);
+    .setValues([[captionFromFileName(video.name), CONFIG.HOT, CONFIG.H_PROMO]]);
   if (highlight) {
     sheet.getRange(row, 1, 1, HIGHLIGHT_WIDTH).setBackground(CONFIG.HIGHLIGHT_COLOR);
     sheet.getRange(row, COL.NOTES).setValue(CONFIG.YELLOW_NOTE);
   }
-  Logger.log('Added "' + file.getName() + '" to ' + sheet.getName() + ' row ' + row +
+  Logger.log('Added "' + video.name + '" to ' + sheet.getName() + ' row ' + row +
     ' (' + dayKey + ')' + (highlight ? ', highlighted' : ''));
   return true;
 }
@@ -323,20 +323,72 @@ function timeZone_(ss) {
 // Drive
 // ---------------------------------------------------------------------------
 
-/** All non-trashed videos under the watched folder (recursively) created after `since`. */
+/**
+ * All non-trashed videos under the watched folder (at any depth) created after
+ * `since`, as { id, name, created }. Asks Drive for recently uploaded videos in
+ * one query, then keeps the ones inside the watched folder. Walking every
+ * folder instead takes many minutes once the folder holds a lot of videos.
+ */
 function findVideosCreatedSince_(since) {
+  DriveApp.getFolderById(CONFIG.DRIVE_FOLDER_ID); // fails early if the folder isn't accessible
+
+  const query = "mimeType contains 'video/' and trashed = false and createdTime > '" +
+    since.toISOString() + "'";
+  const insideCache = {};
   const results = [];
-  const walk = (folder) => {
-    const files = folder.searchFiles("mimeType contains 'video/' and trashed = false");
-    while (files.hasNext()) {
-      const f = files.next();
-      if (f.getDateCreated() > since) results.push(f);
-    }
-    const subfolders = folder.getFolders();
-    while (subfolders.hasNext()) walk(subfolders.next());
-  };
-  walk(DriveApp.getFolderById(CONFIG.DRIVE_FOLDER_ID));
+  let pageToken = '';
+  do {
+    const page = driveApi_('files', {
+      q: query,
+      fields: 'nextPageToken, files(id, name, createdTime, parents)',
+      pageSize: 1000,
+      pageToken: pageToken,
+    });
+    (page.files || []).forEach((f) => {
+      if ((f.parents || []).some((p) => isInsideWatchedFolder_(p, insideCache))) {
+        results.push({ id: f.id, name: f.name, created: new Date(f.createdTime) });
+      }
+    });
+    pageToken = page.nextPageToken || '';
+  } while (pageToken);
   return results;
+}
+
+/** True if `folderId` is the watched folder or somewhere inside it. */
+function isInsideWatchedFolder_(folderId, cache) {
+  const path = [];
+  let id = folderId;
+  let inside = false;
+  for (let depth = 0; id && depth < 30; depth++) {
+    if (id === CONFIG.DRIVE_FOLDER_ID) { inside = true; break; }
+    if (id in cache) { inside = cache[id]; break; }
+    path.push(id);
+    let parents = [];
+    try {
+      parents = driveApi_('files/' + id, { fields: 'parents' }).parents || [];
+    } catch (e) {
+      break; // a folder we can't see can't be inside ours
+    }
+    id = parents[0];
+  }
+  path.forEach((p) => { cache[p] = inside; });
+  return inside;
+}
+
+/** GET request to the Drive v3 REST API with the script's own authorization. */
+function driveApi_(path, params) {
+  const qs = Object.keys(params)
+    .filter((k) => params[k] !== '')
+    .map((k) => encodeURIComponent(k) + '=' + encodeURIComponent(params[k]))
+    .join('&');
+  const res = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/' + path + '?' + qs, {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true,
+  });
+  if (res.getResponseCode() !== 200) {
+    throw new Error('Drive API ' + res.getResponseCode() + ': ' + res.getContentText());
+  }
+  return JSON.parse(res.getContentText());
 }
 
 function driveLink_(fileId) {
