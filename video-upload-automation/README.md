@@ -46,6 +46,7 @@ simpler, free, and can't miss an upload. New rows usually show up within about
 5. Reload the spreadsheet. The **Auto-Fill** menu now has:
    - *Fill Yellow Reviewer Notes*: your existing tool, writes `imanunseen` into Reviewer Notes for every yellow row
    - *Check for new videos now*: run immediately instead of waiting for the timer
+   - *Add today's videos*: adds every video uploaded today that isn't in the sheet yet (e.g. ones uploaded before `install`)
    - *Preview next row*: shows which sheet/row/date a video uploaded now would get, without changing anything
    - *Install / restart* and *Stop*
 

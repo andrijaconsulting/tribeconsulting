@@ -108,6 +108,7 @@ function onOpen() {
     .addItem('Fill Yellow Reviewer Notes', 'fillYellowNotes')
     .addSeparator()
     .addItem('Check for new videos now', 'checkForNewVideos')
+    .addItem("Add today's videos (skips ones already in the sheet)", 'addTodaysVideos')
     .addItem('Preview next row (no changes)', 'previewNextRow')
     .addSeparator()
     .addItem('Install / restart', 'install')
@@ -154,24 +155,54 @@ function checkForNewVideos() {
       lastRun.getTime() - CONFIG.LOOKBACK_MINUTES * 60 * 1000
     ));
 
-    const seen = JSON.parse(props.getProperty(PROP_SEEN) || '[]');
-    const videos = findVideosCreatedSince_(since)
-      .filter((f) => seen.indexOf(f.getId()) === -1)
-      .sort((a, b) => a.getDateCreated() - b.getDateCreated());
-
-    if (videos.length) {
-      const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-      videos.forEach((file) => {
-        addVideoRow_(ss, file);
-        seen.push(file.getId());
-      });
-      SpreadsheetApp.flush();
-      props.setProperty(PROP_SEEN, JSON.stringify(seen.slice(-MAX_SEEN_IDS)));
-    }
+    addVideosCreatedSince_(since);
     props.setProperty(PROP_LAST_RUN, runStartedAt.toISOString());
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * Adds every video uploaded since midnight today, e.g. ones uploaded before
+ * install() ran. Videos already in the sheet (by link) are skipped.
+ */
+function addTodaysVideos() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) return;
+  try {
+    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+    const tz = timeZone_(ss);
+    const now = new Date();
+    const midnight = Utilities.parseDate(Utilities.formatDate(now, tz, 'yyyy-MM-dd'), tz, 'yyyy-MM-dd');
+    const added = addVideosCreatedSince_(midnight);
+    const msg = added.length
+      ? 'Added: ' + added.join(', ')
+      : 'No new videos from today to add.';
+    Logger.log(msg);
+    try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* run from the editor */ }
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Adds a row for each video created after `since` not handled before. Returns the names added. */
+function addVideosCreatedSince_(since) {
+  const props = PropertiesService.getScriptProperties();
+  const seen = JSON.parse(props.getProperty(PROP_SEEN) || '[]');
+  const videos = findVideosCreatedSince_(since)
+    .filter((f) => seen.indexOf(f.getId()) === -1)
+    .sort((a, b) => a.getDateCreated() - b.getDateCreated());
+  if (!videos.length) return [];
+
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const added = [];
+  videos.forEach((file) => {
+    if (addVideoRow_(ss, file)) added.push(file.getName());
+    seen.push(file.getId());
+  });
+  SpreadsheetApp.flush();
+  props.setProperty(PROP_SEEN, JSON.stringify(seen.slice(-MAX_SEEN_IDS)));
+  return added;
 }
 
 /** Shows where a video uploaded right now would go, without changing anything. */
@@ -191,7 +222,10 @@ function previewNextRow() {
 // Sheet logic
 // ---------------------------------------------------------------------------
 
-/** Adds the row for `file`; highlights it if it's the day's HIGHLIGHT_NTH_VIDEO-th video. */
+/**
+ * Adds the row for `file`; highlights it if it's the day's HIGHLIGHT_NTH_VIDEO-th
+ * video. Returns false if the video is already in the sheet.
+ */
 function addVideoRow_(ss, file) {
   const tz = timeZone_(ss);
   const uploaded = file.getDateCreated();
@@ -200,7 +234,7 @@ function addVideoRow_(ss, file) {
 
   if (state.links.some((link) => link.indexOf(file.getId()) !== -1)) {
     Logger.log('Already in sheet, skipping: ' + file.getName());
-    return;
+    return false;
   }
 
   const dayKey = postDateForUpload(toDayKey_(uploaded, tz));
@@ -225,6 +259,7 @@ function addVideoRow_(ss, file) {
   }
   Logger.log('Added "' + file.getName() + '" to ' + sheet.getName() + ' row ' + row +
     ' (' + dayKey + ')' + (highlight ? ', highlighted' : ''));
+  return true;
 }
 
 /** The month sheet ("Oct26") for `date`, else the most recent previous month's. */
