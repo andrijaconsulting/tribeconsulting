@@ -16,7 +16,11 @@
  * The row goes beneath the last filled row of the current month's sheet
  * (e.g. "Oct26"). If that sheet doesn't exist yet, the previous month's sheet
  * is used. Once a day has 2+ videos, one of them (chosen at random) gets the
- * "light yellow 3" fill.
+ * "light yellow 3" fill and "imanunseen" in Reviewer Notes.
+ *
+ * Also includes the "Fill Yellow Reviewer Notes" tool: it writes "imanunseen"
+ * into Reviewer Notes for every yellow row of the open sheet (for rows you
+ * colour by hand).
  *
  * Setup: see README.md in this folder. In short, paste this file into
  * Extensions → Apps Script of the spreadsheet and run `install` once.
@@ -38,6 +42,10 @@ const CONFIG = {
   HIGHLIGHT_COLOR: '#fff2cc',
   // Only highlight a day once it has at least this many videos (ads don't count).
   MIN_VIDEOS_TO_HIGHLIGHT: 2,
+  // Reviewer Notes text for yellow rows.
+  YELLOW_NOTE: 'imanunseen',
+  // Background colours treated as "yellow" by Fill Yellow Reviewer Notes.
+  YELLOW_COLORS: ['#ffff00', '#fff2cc'],
 
   CHECK_EVERY_MINUTES: 5,
   // Look back this far past the last run, so slow uploads aren't missed.
@@ -91,16 +99,41 @@ function uninstall() {
     .forEach((t) => ScriptApp.deleteTrigger(t));
 }
 
-/** Adds a "Video automation" menu to the spreadsheet (bound script only). */
+/** Adds the "Auto-Fill" menu to the spreadsheet (bound script only). */
 function onOpen() {
   SpreadsheetApp.getUi()
-    .createMenu('Video automation')
+    .createMenu('Auto-Fill')
+    .addItem('Fill Yellow Reviewer Notes', 'fillYellowNotes')
+    .addSeparator()
     .addItem('Check for new videos now', 'checkForNewVideos')
     .addItem('Preview next row (no changes)', 'previewNextRow')
     .addSeparator()
     .addItem('Install / restart', 'install')
     .addItem('Stop', 'uninstall')
     .addToUi();
+}
+
+/** Writes YELLOW_NOTE into Reviewer Notes for every yellow row of the open sheet. */
+function fillYellowNotes() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < FIRST_DATA_ROW) return;
+
+  const range = sheet.getRange(FIRST_DATA_ROW, COL.NOTES, lastRow - FIRST_DATA_ROW + 1, 1);
+  const backgrounds = range.getBackgrounds();
+  const values = range.getValues();
+  let updated = false;
+  for (let i = 0; i < values.length; i++) {
+    if (isYellow_(backgrounds[i][0]) && values[i][0] !== CONFIG.YELLOW_NOTE) {
+      values[i][0] = CONFIG.YELLOW_NOTE;
+      updated = true;
+    }
+  }
+  if (updated) range.setValues(values);
+}
+
+function isYellow_(color) {
+  return CONFIG.YELLOW_COLORS.indexOf(String(color).toLowerCase()) !== -1;
 }
 
 /** Called by the timer. Adds a row for every new video found. */
@@ -283,8 +316,9 @@ function highlightOneVideoForDay_(sheet, dayKey, tz) {
   if (videoRows.length < CONFIG.MIN_VIDEOS_TO_HIGHLIGHT) return;
 
   const pick = videoRows[Math.floor(Math.random() * videoRows.length)];
-  sheet.getRange(FIRST_DATA_ROW + pick, 1, 1, HIGHLIGHT_WIDTH)
-    .setBackground(CONFIG.HIGHLIGHT_COLOR);
+  const row = FIRST_DATA_ROW + pick;
+  sheet.getRange(row, 1, 1, HIGHLIGHT_WIDTH).setBackground(CONFIG.HIGHLIGHT_COLOR);
+  if (!values[pick][COL.NOTES - 1]) sheet.getRange(row, COL.NOTES).setValue(CONFIG.YELLOW_NOTE);
 }
 
 // ---------------------------------------------------------------------------

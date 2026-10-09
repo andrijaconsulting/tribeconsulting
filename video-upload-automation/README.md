@@ -21,7 +21,8 @@ e.g. `october26/Remixed Winners`), a row is added to the **Andrija** spreadsheet
   ads included), then moves to the next weekday. It never picks a date before
   today.
 - **Yellow:** once a day has 2+ videos, one of them is picked at random and
-  filled with *light yellow 3* (`#fff2cc`), unless that day already has one.
+  filled with *light yellow 3* (`#fff2cc`) and gets `imanunseen` in Reviewer
+  Notes, unless that day already has a yellow row.
   Ad rows are never picked.
 - **Ads** stay manual. The script only reacts to uploaded videos, but rows you
   add by hand (ads included) still count toward a day's slots.
@@ -39,11 +40,12 @@ simpler, free, and can't miss an upload. New rows usually show up within about
 ## Setup (one time, ~3 minutes)
 
 1. Open the spreadsheet → **Extensions → Apps Script**.
-2. Replace the contents of `Code.gs` with [`Code.gs`](./Code.gs) from this folder and save.
+2. Replace the **entire** contents of `Code.gs` (including your existing Auto-Fill code, which is now built in) with [`Code.gs`](./Code.gs) from this folder and save.
 3. *(Optional, limits Drive access to read-only)* **Project Settings** → tick
    **Show "appsscript.json"**, then paste [`appsscript.json`](./appsscript.json).
 4. In the function dropdown pick **`install`** → **Run** → approve the permissions.
-5. Reload the spreadsheet. A **Video automation** menu appears with:
+5. Reload the spreadsheet. The **Auto-Fill** menu now has:
+   - *Fill Yellow Reviewer Notes*: your existing tool, writes `imanunseen` into Reviewer Notes for every yellow row
    - *Check for new videos now*: run immediately instead of waiting for the timer
    - *Preview next row*: shows which sheet/row/date the next video would get, without changing anything
    - *Install / restart* and *Stop*
