@@ -280,7 +280,7 @@ function getTargetSheet_(ss, date) {
  * each dated row its day, whether it's a video and whether it's highlighted.
  */
 function readSheetState_(sheet) {
-  const tz = sheet.getParent().getSpreadsheetTimeZone(); // date cells are in the sheet's zone
+  const tz = sheetTimeZone_(sheet.getParent()); // date cells are in the sheet's zone
   const lastRow = sheet.getLastRow();
   const range = lastRow >= FIRST_DATA_ROW
     ? sheet.getRange(FIRST_DATA_ROW, 1, lastRow - FIRST_DATA_ROW + 1, HIGHLIGHT_WIDTH)
@@ -314,9 +314,15 @@ function readSheetState_(sheet) {
   return { lastFilledRow, links, rows };
 }
 
+/** Time zone for deciding which day a video was uploaded on. */
 function timeZone_(ss) {
-  if (CONFIG.TIME_ZONE) return CONFIG.TIME_ZONE;
-  return ss.getSpreadsheetTimeZone();
+  return CONFIG.TIME_ZONE ? String(CONFIG.TIME_ZONE) : sheetTimeZone_(ss);
+}
+
+/** The spreadsheet's own time zone (what its date cells are in), with fallbacks. */
+function sheetTimeZone_(ss) {
+  const tz = ss.getSpreadsheetTimeZone() || Session.getScriptTimeZone() || 'Etc/GMT';
+  return String(tz);
 }
 
 // ---------------------------------------------------------------------------
