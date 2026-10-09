@@ -5,7 +5,7 @@ e.g. `october26/Remixed Winners`), a row is added to the **Andrija** spreadsheet
 
 | Column    | Value                                                         |
 |-----------|---------------------------------------------------------------|
-| Date      | Next free weekday slot. Never a weekend (see below)           |
+| Date      | Next weekday after the upload day (Mon→Tue, Fri/Sat/Sun→Mon) |
 | Post Type | `Remixed Winner`                                              |
 | Editor    | `Andrija`                                                     |
 | GDrive    | Link to the video                                             |
@@ -17,15 +17,14 @@ e.g. `october26/Remixed Winners`), a row is added to the **Andrija** spreadsheet
   exist yet, the previous month's tab is used.
 - **Which row:** directly beneath the last filled row. The pre-filled `Andrija`
   in the Editor column doesn't count as filled.
-- **Date:** fills the last scheduled day up to `MAX_PER_DAY` rows (default 2,
-  ads included), then moves to the next weekday. It never picks a date before
-  today.
-- **Yellow:** once a day has 2+ videos, one of them is picked at random and
-  filled with *light yellow 3* (`#fff2cc`) and gets `imanunseen` in Reviewer
-  Notes, unless that day already has a yellow row.
-  Ad rows are never picked.
-- **Ads** stay manual. The script only reacts to uploaded videos, but rows you
-  add by hand (ads included) still count toward a day's slots.
+- **Date:** the next weekday after the day you uploaded, so it is never a
+  weekend. Upload on Friday and it's dated Monday. Upload on Monday and it's
+  dated Tuesday. The upload day is worked out in the spreadsheet's time zone.
+  Set `TIME_ZONE` in `CONFIG` (e.g. `'Europe/Belgrade'`) to use yours instead.
+- **Yellow:** the 2nd video for each date gets *light yellow 3* (`#fff2cc`) and
+  `imanunseen` in Reviewer Notes straight away, unless that date already has a
+  yellow row. Ads don't count as videos.
+- **Ads** stay manual. The script only reacts to uploaded videos.
 
 All of these settings are in the `CONFIG` block at the top of `Code.gs`.
 
@@ -47,7 +46,7 @@ simpler, free, and can't miss an upload. New rows usually show up within about
 5. Reload the spreadsheet. The **Auto-Fill** menu now has:
    - *Fill Yellow Reviewer Notes*: your existing tool, writes `imanunseen` into Reviewer Notes for every yellow row
    - *Check for new videos now*: run immediately instead of waiting for the timer
-   - *Preview next row*: shows which sheet/row/date the next video would get, without changing anything
+   - *Preview next row*: shows which sheet/row/date a video uploaded now would get, without changing anything
    - *Install / restart* and *Stop*
 
 Only videos uploaded **after** `install` runs are picked up, so existing videos
@@ -57,9 +56,9 @@ aren't added twice.
 
 - **Executions** (left sidebar in Apps Script) shows each run and its log, e.g.
   `Added "X.mp4" to Oct26 row 19 (2026-10-13)`.
-- To change the number of slots per day, the post type, etc., edit `CONFIG` and save.
+- To change the time zone, post type, etc., edit `CONFIG` and save.
   No reinstall is needed.
 
 ## Tests
 
-`node test.js` checks the date, sheet-name and caption logic.
+`node test.js` checks the posting-date, sheet-name and caption logic.

@@ -5,7 +5,8 @@
  * folder (including its month/category subfolders) and, for each new one,
  * adds a row to the "Andrija" content calendar spreadsheet:
  *
- *   Date      next free weekday slot (never Saturday/Sunday)
+ *   Date      the next weekday after the upload day
+ *             (Mon→Tue, …, Thu→Fri, Fri/Sat/Sun→Mon)
  *   Post Type "Remixed Winner"
  *   Editor    "Andrija"
  *   GDrive    link to the video
@@ -15,8 +16,8 @@
  *
  * The row goes beneath the last filled row of the current month's sheet
  * (e.g. "Oct26"). If that sheet doesn't exist yet, the previous month's sheet
- * is used. Once a day has 2+ videos, one of them (chosen at random) gets the
- * "light yellow 3" fill and "imanunseen" in Reviewer Notes.
+ * is used. The second video of each day gets the "light yellow 3" fill and
+ * "imanunseen" in Reviewer Notes.
  *
  * Also includes the "Fill Yellow Reviewer Notes" tool: it writes "imanunseen"
  * into Reviewer Notes for every yellow row of the open sheet (for rows you
@@ -35,13 +36,14 @@ const CONFIG = {
   HOT: 'No',
   H_PROMO: 'No',
 
-  // How many rows (videos + ads) fill up one day before moving to the next weekday.
-  MAX_PER_DAY: 2,
+  // Time zone used to decide which day a video was uploaded on, e.g.
+  // 'Europe/Belgrade'. Empty = the spreadsheet's time zone.
+  TIME_ZONE: '',
 
   // "light yellow 3" in the Google Sheets colour palette.
   HIGHLIGHT_COLOR: '#fff2cc',
-  // Only highlight a day once it has at least this many videos (ads don't count).
-  MIN_VIDEOS_TO_HIGHLIGHT: 2,
+  // Which video of the day gets highlighted (ads don't count).
+  HIGHLIGHT_NTH_VIDEO: 2,
   // Reviewer Notes text for yellow rows.
   YELLOW_NOTE: 'imanunseen',
   // Background colours treated as "yellow" by Fill Yellow Reviewer Notes.
@@ -172,16 +174,15 @@ function checkForNewVideos() {
   }
 }
 
-/** Logs where the next video would go, without changing anything. */
+/** Shows where a video uploaded right now would go, without changing anything. */
 function previewNextRow() {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-  const tz = ss.getSpreadsheetTimeZone();
-  const sheet = getTargetSheet_(ss, new Date());
-  const state = readSheetState_(ss, sheet);
-  const slot = chooseSlotDate(state.lastDayKey, state.lastDayCount,
-    todayKey_(tz), CONFIG.MAX_PER_DAY);
-  const msg = 'Next video → sheet "' + sheet.getName() + '", row ' +
-    (state.lastFilledRow + 1) + ', date ' + slot;
+  const tz = timeZone_(ss);
+  const now = new Date();
+  const sheet = getTargetSheet_(ss, now);
+  const state = readSheetState_(sheet);
+  const msg = 'A video uploaded now → sheet "' + sheet.getName() + '", row ' +
+    (state.lastFilledRow + 1) + ', date ' + postDateForUpload(toDayKey_(now, tz));
   Logger.log(msg);
   try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* not opened from the sheet */ }
 }
@@ -190,23 +191,23 @@ function previewNextRow() {
 // Sheet logic
 // ---------------------------------------------------------------------------
 
+/** Adds the row for `file`; highlights it if it's the day's HIGHLIGHT_NTH_VIDEO-th video. */
 function addVideoRow_(ss, file) {
-  const tz = ss.getSpreadsheetTimeZone();
-  const sheet = getTargetSheet_(ss, new Date());
-  const state = readSheetState_(ss, sheet);
+  const tz = timeZone_(ss);
+  const uploaded = file.getDateCreated();
+  const sheet = getTargetSheet_(ss, uploaded);
+  const state = readSheetState_(sheet);
 
   if (state.links.some((link) => link.indexOf(file.getId()) !== -1)) {
     Logger.log('Already in sheet, skipping: ' + file.getName());
     return;
   }
 
-  const dayKey = chooseSlotDate(state.lastDayKey, state.lastDayCount,
-    todayKey_(tz), CONFIG.MAX_PER_DAY);
-
-  // Moving on to a new day: the previous day is complete.
-  if (state.lastDayKey && dayKey !== state.lastDayKey) {
-    highlightOneVideoForDay_(sheet, state.lastDayKey, tz);
-  }
+  const dayKey = postDateForUpload(toDayKey_(uploaded, tz));
+  const sameDay = state.rows.filter((r) => r.dayKey === dayKey);
+  const videosBefore = sameDay.filter((r) => r.isVideo).length;
+  const highlight = videosBefore + 1 === CONFIG.HIGHLIGHT_NTH_VIDEO &&
+    !sameDay.some((r) => r.isHighlighted);
 
   const row = state.lastFilledRow + 1;
   if (row > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), 1);
@@ -218,23 +219,21 @@ function addVideoRow_(ss, file) {
     .setValues([[CONFIG.POST_TYPE, CONFIG.EDITOR, driveLink_(file.getId())]]);
   sheet.getRange(row, COL.CAPTION, 1, 3)
     .setValues([[captionFromFileName(file.getName()), CONFIG.HOT, CONFIG.H_PROMO]]);
-  Logger.log('Added "' + file.getName() + '" to ' + sheet.getName() + ' row ' + row + ' (' + dayKey + ')');
-
-  const countForDay = (dayKey === state.lastDayKey ? state.lastDayCount : 0) + 1;
-  if (countForDay >= CONFIG.MAX_PER_DAY) {
-    SpreadsheetApp.flush();
-    highlightOneVideoForDay_(sheet, dayKey, tz);
+  if (highlight) {
+    sheet.getRange(row, 1, 1, HIGHLIGHT_WIDTH).setBackground(CONFIG.HIGHLIGHT_COLOR);
+    sheet.getRange(row, COL.NOTES).setValue(CONFIG.YELLOW_NOTE);
   }
+  Logger.log('Added "' + file.getName() + '" to ' + sheet.getName() + ' row ' + row +
+    ' (' + dayKey + ')' + (highlight ? ', highlighted' : ''));
 }
 
-/** Current month's sheet ("Oct26"), else the most recent previous month's. */
-function getTargetSheet_(ss, now) {
-  const tz = ss.getSpreadsheetTimeZone();
-  const year = Number(Utilities.formatDate(now, tz, 'yyyy'));
-  const month = Number(Utilities.formatDate(now, tz, 'M')) - 1;
+/** The month sheet ("Oct26") for `date`, else the most recent previous month's. */
+function getTargetSheet_(ss, date) {
+  const tz = timeZone_(ss);
+  const year = Number(Utilities.formatDate(date, tz, 'yyyy'));
+  const month = Number(Utilities.formatDate(date, tz, 'M')) - 1;
   for (let back = 0; back <= CONFIG.MAX_MONTHS_BACK; back++) {
-    const name = sheetNameFor(year, month - back);
-    const sheet = ss.getSheetByName(name);
+    const sheet = ss.getSheetByName(sheetNameFor(year, month - back));
     if (sheet) return sheet;
   }
   throw new Error('No month sheet found for ' + sheetNameFor(year, month) +
@@ -242,83 +241,47 @@ function getTargetSheet_(ss, now) {
 }
 
 /**
- * Finds the last filled row and the last scheduled day. If the sheet has no
- * dates yet (new month), the last day is taken from the previous month's sheet.
+ * Finds the last filled row, the Drive links already in the sheet, and for
+ * each dated row its day, whether it's a video and whether it's highlighted.
  */
-function readSheetState_(ss, sheet) {
-  const tz = ss.getSpreadsheetTimeZone();
+function readSheetState_(sheet) {
+  const tz = sheet.getParent().getSpreadsheetTimeZone(); // date cells are in the sheet's zone
   const lastRow = sheet.getLastRow();
-  const values = lastRow >= FIRST_DATA_ROW
-    ? sheet.getRange(FIRST_DATA_ROW, 1, lastRow - FIRST_DATA_ROW + 1, COL.CAPTION).getValues()
-    : [];
+  const range = lastRow >= FIRST_DATA_ROW
+    ? sheet.getRange(FIRST_DATA_ROW, 1, lastRow - FIRST_DATA_ROW + 1, HIGHLIGHT_WIDTH)
+    : null;
+  const values = range ? range.getValues() : [];
+  const backgrounds = range ? range.getBackgrounds() : [];
+  const highlightColor = CONFIG.HIGHLIGHT_COLOR.toLowerCase();
 
   let lastFilledRow = FIRST_DATA_ROW - 1;
   const links = [];
-  const dayKeys = [];
+  const rows = [];
   values.forEach((r, i) => {
     // Editor is pre-filled on empty rows, so it doesn't count as "filled".
     const filled = [COL.DATE, COL.POST_TYPE, COL.GDRIVE, COL.CAPTION]
       .some((c) => String(r[c - 1]).trim() !== '');
     if (filled) lastFilledRow = FIRST_DATA_ROW + i;
-    if (r[COL.GDRIVE - 1]) links.push(String(r[COL.GDRIVE - 1]));
-    if (r[COL.DATE - 1] instanceof Date) dayKeys.push(toDayKey_(r[COL.DATE - 1], tz));
-  });
 
-  let lastDayKey = dayKeys.length ? dayKeys[dayKeys.length - 1] : null;
-  let lastDayCount = dayKeys.filter((k) => k === lastDayKey).length;
+    const link = String(r[COL.GDRIVE - 1]);
+    if (link) links.push(link);
 
-  if (!lastDayKey) {
-    const prev = previousMonthSheet_(ss, sheet);
-    if (prev) {
-      const prevState = readSheetState_(ss, prev);
-      lastDayKey = prevState.lastDayKey;
-      lastDayCount = prevState.lastDayCount;
+    const date = r[COL.DATE - 1];
+    if (date instanceof Date) {
+      rows.push({
+        dayKey: toDayKey_(date, tz),
+        isVideo: /^https?:\/\//.test(link) &&
+          String(r[COL.POST_TYPE - 1]).trim().toLowerCase() !== 'ad',
+        isHighlighted: backgrounds[i].some((bg) => String(bg).toLowerCase() === highlightColor),
+      });
     }
-  }
-  return { lastFilledRow, links, lastDayKey, lastDayCount };
-}
-
-function previousMonthSheet_(ss, sheet) {
-  const parsed = parseSheetName(sheet.getName());
-  if (!parsed) return null;
-  for (let back = 1; back <= CONFIG.MAX_MONTHS_BACK; back++) {
-    const s = ss.getSheetByName(sheetNameFor(parsed.year, parsed.month - back));
-    if (s) return s;
-  }
-  return null;
-}
-
-/**
- * If a day has enough videos and none is highlighted yet, gives one random
- * video row the highlight colour. Ads ("marketing" rows) are never picked.
- */
-function highlightOneVideoForDay_(sheet, dayKey, tz) {
-  const lastRow = sheet.getLastRow();
-  if (lastRow < FIRST_DATA_ROW) return;
-  const n = lastRow - FIRST_DATA_ROW + 1;
-  const range = sheet.getRange(FIRST_DATA_ROW, 1, n, HIGHLIGHT_WIDTH);
-  const values = range.getValues();
-  const backgrounds = range.getBackgrounds();
-  const highlight = CONFIG.HIGHLIGHT_COLOR.toLowerCase();
-
-  const dayRows = [];
-  values.forEach((r, i) => {
-    const d = r[COL.DATE - 1];
-    if (d instanceof Date && toDayKey_(d, tz) === dayKey) dayRows.push(i);
   });
-  const alreadyHighlighted = dayRows.some((i) =>
-    backgrounds[i].some((bg) => String(bg).toLowerCase() === highlight));
-  if (alreadyHighlighted) return;
+  return { lastFilledRow, links, rows };
+}
 
-  const videoRows = dayRows.filter((i) =>
-    /^https?:\/\//.test(String(values[i][COL.GDRIVE - 1])) &&
-    String(values[i][COL.POST_TYPE - 1]).trim().toLowerCase() !== 'ad');
-  if (videoRows.length < CONFIG.MIN_VIDEOS_TO_HIGHLIGHT) return;
-
-  const pick = videoRows[Math.floor(Math.random() * videoRows.length)];
-  const row = FIRST_DATA_ROW + pick;
-  sheet.getRange(row, 1, 1, HIGHLIGHT_WIDTH).setBackground(CONFIG.HIGHLIGHT_COLOR);
-  if (!values[pick][COL.NOTES - 1]) sheet.getRange(row, COL.NOTES).setValue(CONFIG.YELLOW_NOTE);
+function timeZone_(ss) {
+  if (CONFIG.TIME_ZONE) return CONFIG.TIME_ZONE;
+  return ss.getSpreadsheetTimeZone();
 }
 
 // ---------------------------------------------------------------------------
@@ -359,14 +322,6 @@ function sheetNameFor(year, month) {
   return MONTH_ABBR[m] + String(y).slice(-2);
 }
 
-/** "Oct26" → { year: 2026, month: 9 }, or null. */
-function parseSheetName(name) {
-  const m = /^([A-Za-z]{3})(\d{2})$/.exec(String(name).trim());
-  if (!m) return null;
-  const month = MONTH_ABBR.findIndex((a) => a.toLowerCase() === m[1].toLowerCase());
-  return month === -1 ? null : { year: 2000 + Number(m[2]), month };
-}
-
 /** "Issue resolved.mp4" → "Issue resolved". */
 function captionFromFileName(name) {
   return String(name).replace(/\.[A-Za-z0-9]{2,5}$/, '').trim();
@@ -377,14 +332,10 @@ function dayKeyToUtc_(key) {
   return new Date(Date.UTC(y, m - 1, d));
 }
 
-function utcToDayKey_(date) {
-  return date.toISOString().slice(0, 10);
-}
-
 function addDays(key, n) {
   const d = dayKeyToUtc_(key);
   d.setUTCDate(d.getUTCDate() + n);
-  return utcToDayKey_(d);
+  return d.toISOString().slice(0, 10);
 }
 
 function isWeekend(key) {
@@ -392,23 +343,11 @@ function isWeekend(key) {
   return day === 0 || day === 6;
 }
 
-function nextWeekdayOnOrAfter(key) {
-  let k = key;
+/** Posting date for a video uploaded on `uploadDayKey`: the next weekday after it. */
+function postDateForUpload(uploadDayKey) {
+  let k = addDays(uploadDayKey, 1);
   while (isWeekend(k)) k = addDays(k, 1);
   return k;
-}
-
-/**
- * Picks the posting date for the next video.
- * - Keep filling the last scheduled day while it has fewer than `maxPerDay` rows.
- * - Otherwise move to the next weekday after it.
- * - Never a weekend, and never earlier than today (or the next weekday if today is a weekend).
- */
-function chooseSlotDate(lastDayKey, lastDayCount, todayKey, maxPerDay) {
-  const earliest = nextWeekdayOnOrAfter(todayKey);
-  if (!lastDayKey || lastDayKey < earliest) return earliest;
-  if (!isWeekend(lastDayKey) && lastDayCount < maxPerDay) return lastDayKey;
-  return nextWeekdayOnOrAfter(addDays(lastDayKey, 1));
 }
 
 /** "2026-10-13" → 46308 (Google Sheets date serial). */
@@ -420,13 +359,9 @@ function toDayKey_(date, tz) {
   return Utilities.formatDate(date, tz, 'yyyy-MM-dd');
 }
 
-function todayKey_(tz) {
-  return toDayKey_(new Date(), tz);
-}
-
 if (typeof module !== 'undefined') {
   module.exports = {
-    sheetNameFor, parseSheetName, captionFromFileName, addDays, isWeekend,
-    nextWeekdayOnOrAfter, chooseSlotDate, dayKeyToSerial,
+    sheetNameFor, captionFromFileName, addDays, isWeekend,
+    postDateForUpload, dayKeyToSerial,
   };
 }
